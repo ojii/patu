@@ -10,6 +10,7 @@ from BeautifulSoup import BeautifulSoup
 from optparse import OptionParser
 from multiprocessing import Process, Queue, current_process
 from urlparse import urlsplit, urljoin, urlunsplit
+import urllib
 
 
 class Spinner:
@@ -22,25 +23,25 @@ class Spinner:
         sys.stderr.flush()
         self.status = (self.status + 1) % 4
 
-def worker(input, output, constraint):
+def worker(headers, input, output, constraint):
     """
     Function run by worker processes
     """
     try:
         h = httplib2.Http(timeout = 60)
         for url in iter(input.get, 'STOP'):
-            result = get_url(h, url, constraint)
+            result = get_url(h, headers, url, constraint)
             output.put(result)
     except KeyboardInterrupt:
         pass
 
-def get_url(h, url, constraint):
+def get_url(h, headers, url, constraint):
     """
     Function used to calculate result
     """
     links = []
     try:
-        resp, content = h.request(url)
+        resp, content = h.request(url, headers=headers)
         soup = BeautifulSoup(content)
     except Exception, e:
         return (current_process().name, '', url, links)
@@ -68,6 +69,24 @@ def test(options, args):
     # Create queues
     task_queue = Queue()
     done_queue = Queue()
+    
+    # check if we have to log in
+    headers = {}
+    if options.login_url:
+        # check for csrf
+        if options.verbose:
+            print 'Logging in'
+        h = httplib2.Http(timeout=60)
+        body = {'username': options.username, 'password': options.password}
+        headers = {'Content-type': 'application/x-www-form-urlencoded'}
+        if options.csrf:
+            response, content = h.request(options.login_url)
+            soup = BeautifulSoup(content)
+            token = dict(soup.find('input', attrs={'name': options.csrf}).attrs)['value']
+            body[options.csrf] = token
+            headers['Cookie'] = response['set-cookie']
+        response, content = h.request(options.login_url, 'POST', headers=headers, body=urllib.urlencode(body))
+        headers['Cookie'] = response['set-cookie']
 
     # Submit first url
     try:
@@ -84,7 +103,7 @@ def test(options, args):
 
         # Start worker processes
         for i in range(options.spiders):
-            p = Process(target=worker, args=(task_queue, done_queue, host))
+            p = Process(target=worker, args=(headers, task_queue, done_queue, host))
             p.start()
             processes.append(p)
 
@@ -136,6 +155,10 @@ if __name__ == '__main__':
         ["-v", "--verbose", dict(dest="verbose", action="store_true", default=False, help="outputs every request (implies --nospiner)")],
         ["-d", "--depth", dict(dest="depth", type="int", default=-1, help="does a breadth-first crawl, stopping after DEPTH levels (implies --breadth)")],
         ["-b", "--breadth", dict(dest="breadth", action="store_true", default=False, help="does a breadth-first crawl; may be used with --depth")],
+        ["-c", "--csrf", dict(dest="csrf", action="store", default=None, help="specify the name of the csrf input field")],
+        ["-l", "--login-url", dict(dest="login_url", default=None, help="specify a url to log in")],
+        ["-u", "--username", dict(dest="username", default=None, help="username to log in")],
+        ["-p", "--password", dict(dest="password", default=None, help="password to log in")],
     ]
     for s, l, k in options_a:
         parser.add_option(s, l, **k)
