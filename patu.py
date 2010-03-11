@@ -11,6 +11,12 @@ from optparse import OptionParser
 from multiprocessing import Process, Queue, current_process
 from urlparse import urlsplit, urljoin, urlunsplit
 import urllib
+import re
+
+script_re = re.compile(r'<script type=("|\')text/javascript("|\')>.*?</script>', re.DOTALL)
+
+def dejsify(content):
+    return script_re.sub('', content)
 
 
 class Spinner:
@@ -23,12 +29,11 @@ class Spinner:
         sys.stderr.flush()
         self.status = (self.status + 1) % 4
 
-def worker(headers, input, output, constraint):
+def worker(h, headers, input, output, constraint):
     """
     Function run by worker processes
     """
     try:
-        h = httplib2.Http(timeout = 60)
         for url in iter(input.get, 'STOP'):
             result = get_url(h, headers, url, constraint)
             output.put(result)
@@ -42,9 +47,10 @@ def get_url(h, headers, url, constraint):
     links = []
     try:
         resp, content = h.request(url, headers=headers)
+        content = dejsify(content)
         soup = BeautifulSoup(content)
     except Exception, e:
-        return (current_process().name, '', url, links)
+        return (current_process().name, 'ERROR:%s' % e, url, links)
     hrefs = [a['href'] for a in soup.findAll('a') if a.has_key('href')]
     for href in hrefs:
         absolute_url = urljoin(resp.get('location', url), href.strip())
@@ -72,13 +78,13 @@ def test(options, args):
     
     # check if we have to log in
     headers = {}
+    h = httplib2.Http(timeout=60)
     if options.login_url:
-        # check for csrf
         if options.verbose:
             print 'Logging in'
-        h = httplib2.Http(timeout=60)
         body = {'username': options.username, 'password': options.password}
         headers = {'Content-type': 'application/x-www-form-urlencoded'}
+        # check for csrf
         if options.csrf:
             response, content = h.request(options.login_url)
             soup = BeautifulSoup(content)
@@ -103,7 +109,7 @@ def test(options, args):
 
         # Start worker processes
         for i in range(options.spiders):
-            p = Process(target=worker, args=(headers, task_queue, done_queue, host))
+            p = Process(target=worker, args=(h, headers, task_queue, done_queue, host))
             p.start()
             processes.append(p)
 
